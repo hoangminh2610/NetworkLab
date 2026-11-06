@@ -25,7 +25,16 @@
   const createNetwork = id => {
     const template = scenarios.find(s => s.id === id);
     if (!template) throw new Error("Kịch bản không tồn tại");
-    return {...structuredClone(template), cache: Object.create(null), nextId: 1};
+    const network = {...structuredClone(template), cache: Object.create(null), nextId: 1};
+    // Một số topology OSPF cũ chưa khai báo MAC cho các cổng router.
+    // Sinh MAC mô phỏng ổn định để Packet Inspector và ARP cache không bị trống.
+    const hex = value => value.toString(16).padStart(2, "0").toUpperCase();
+    network.devices.forEach((node, deviceIndex) => node.ports.forEach((iface, portIndex) => {
+      if (node.type !== "switch" && !iface.mac) {
+        iface.mac = "02:FE:" + hex(deviceIndex) + ":" + hex(portIndex) + ":00:01";
+      }
+    }));
+    return network;
   };
 
   // The intermediate vertices of a LAN path must be switches in the same VLAN.
@@ -98,25 +107,176 @@
     return {path: [], backup: [], reason: "Không còn tuyến liên miền hoạt động từ nguồn tới đích.", faults: net.links.filter(l => !l.up).map(l => l.id)};
   }
 
-  function probeInterdomain(net, sourceId, targetKey, mode) {
-    const source = device(net, sourceId), dest = endpoint(net, targetKey);
-    const steps = [], pathInfo = interdomainPath(net, sourceId, targetKey);
-    const outcome = (ok, title, faultNode = "") => ({ok, title, steps, path: pathInfo.path, backup: pathInfo.backup, faults: pathInfo.faults, faultNode});
-    if (!source?.ports[0]?.ip || !dest.iface?.ip) return outcome(false, "Chọn nguồn và đích hợp lệ");
-    const sourceIsRouter = source.type === "router";
-    const gateway = sourceIsRouter ? source : net.devices.find(d => d.type === "router" && d.ports.some(p => p.ip === source.gateway));
-    if (!gateway) return outcome(false, "Không tìm thấy gateway", source.id);
-    if (!sourceIsRouter) {
-      steps.push({title: "Chọn next hop", note: "Nguồn gửi frame đầu tiên tới default gateway " + source.gateway + "."});
-      steps.push({title: "ARP Request", note: source.name + " phân giải MAC của gateway trong mạng LAN."});
-      steps.push({title: "ARP Reply", note: gateway.name + " trả lời MAC của cổng gateway."});
-    } else {
-      steps.push({title: "Khởi tạo định tuyến", note: source.name + " tra cứu bảng định tuyến và chọn next hop phù hợp."});
+  function ipMatchesPrefix(ip, cidr) {
+    const [network, rawPrefix] = String(cidr || "").split("/");
+    const address = ipv4(ip), networkAddress = ipv4(network);
+    const prefix = Number(rawPrefix);
+    if (address === null || networkAddress === null || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) return false;
+    const bits = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    return (address & bits) === (networkAddress & bits);
+  }
+
+  function linkedPeer(net, node, iface) {
+    const link = net.links.find(item =>
+      (item.a.device === node.id && item.a.port === iface.id) ||
+      (item.b.device === node.id && item.b.port === iface.id));
+    if (!link || !link.up) return null;
+    const localIsA = link.a.device === node.id && link.a.port === iface.id;
+    const remote = localIsA ? link.b : link.a;
+    const peerNode = device(net, remote.device);
+    const peerIface = port(peerNode, remote.port);
+    return peerNode && peerIface ? {link, node: peerNode, iface: peerIface} : null;
+  }
+
+  // Tra cứu tuyến theo từng router cho Case 6. Tuyến connected được ưu tiên;
+  // nếu không có, router phải có static route với next hop/interface hợp lệ.
+  function routeFromRouterToEndpoint(net, currentRouter, targetNode, targetIface, visited = []) {
+    if (!currentRouter || currentRouter.type !== "router") {
+      return {ok: false, path: [], faultNode: currentRouter?.id || "", reason: "Next hop không phải router hợp lệ."};
     }
-    if (mode === "arp") return outcome(true, "Đã phân giải MAC của gateway");
+    if (visited.includes(currentRouter.id)) {
+      return {ok: false, path: [], faultNode: currentRouter.id, loop: true,
+        reason: "Phát hiện routing loop tại " + currentRouter.name + "."};
+    }
+    const chain = [...visited, currentRouter.id];
+    const connected = currentRouter.ports
+      .filter(iface => iface.ip && inSubnet(targetIface.ip, iface))
+      .sort((a, b) => b.prefix - a.prefix);
+    for (const iface of connected) {
+      const path = findPath(net, {node: currentRouter, iface}, {node: targetNode, iface: targetIface});
+      if (path) return {ok: true, path, routers: chain, routeNotes: [currentRouter.name + ": mạng đích kết nối trực tiếp qua " + iface.id + "."]};
+    }
+
+    const route = (currentRouter.routes || [])
+      .filter(item => ipMatchesPrefix(targetIface.ip, item.prefix))
+      .sort((a, b) => Number(b.prefix.split("/")[1]) - Number(a.prefix.split("/")[1]))[0];
+    if (!route) {
+      return {ok: false, path: [], faultNode: currentRouter.id,
+        reason: currentRouter.name + " không có tuyến khớp với mạng đích " + subnet(targetIface) + "."};
+    }
+    const outIface = port(currentRouter, route.interface);
+    if (!outIface || !route.nextHop || !inSubnet(route.nextHop, outIface)) {
+      return {ok: false, path: [], faultNode: currentRouter.id,
+        reason: "Static route trên " + currentRouter.name + " có next hop hoặc interface không hợp lệ."};
+    }
+    const peer = linkedPeer(net, currentRouter, outIface);
+    if (!peer || peer.iface.ip !== route.nextHop) {
+      return {ok: false, path: [], faultNode: currentRouter.id,
+        reason: "Không thể phân giải next hop " + route.nextHop + " qua interface " + outIface.id + " trên " + currentRouter.name + "."};
+    }
+    const segmentPath = findPath(net, {node: currentRouter, iface: outIface}, {node: peer.node, iface: peer.iface});
+    if (!segmentPath) {
+      return {ok: false, path: [], faultNode: currentRouter.id,
+        reason: "Liên kết tới next hop " + route.nextHop + " đang không khả dụng."};
+    }
+    if (peer.node.id === targetNode.id) {
+      return {ok: true, path: segmentPath, routers: chain,
+        routeNotes: [currentRouter.name + " chọn " + route.prefix + " via " + route.nextHop + " qua " + outIface.id + "."]};
+    }
+    const rest = routeFromRouterToEndpoint(net, peer.node, targetNode, targetIface, chain);
+    return {
+      ...rest,
+      path: [...segmentPath, ...(rest.path || [])],
+      routeNotes: [currentRouter.name + " chọn " + route.prefix + " via " + route.nextHop + " qua " + outIface.id + ".", ...(rest.routeNotes || [])]
+    };
+  }
+
+  function probeCase6(net, sourceId, targetKey, mode) {
+    const source = device(net, sourceId), dest = endpoint(net, targetKey);
+    const sourcePort = source?.ports[0];
+    const steps = [];
+    const outcome = (ok, title, extra = {}) => ({ok, title, steps, path: [], returnPath: [], backup: [], faults: [], faultNode: "", ...extra});
+    if (!source || !sourcePort?.ip || !dest.node || !dest.iface?.ip) {
+      return outcome(false, "Chọn nguồn và đích có địa chỉ IPv4 hợp lệ.");
+    }
+    const sourceRouter = net.devices.find(node => node.type === "router" &&
+      node.ports.some(iface => iface.ip === source.gateway && iface.vlan === sourcePort.vlan));
+    const sourceRouterPort = sourceRouter?.ports.find(iface => iface.ip === source.gateway && iface.vlan === sourcePort.vlan);
+    if (!sourceRouter || !sourceRouterPort) {
+      return outcome(false, "Không tìm thấy default gateway của máy nguồn.", {faultNode: source.id});
+    }
+    const sourceLan = findPath(net, {node: source, iface: sourcePort}, {node: sourceRouter, iface: sourceRouterPort});
+    if (!sourceLan) {
+      return outcome(false, "Không thể phân giải gateway vì đường LAN nguồn đang gián đoạn.", {faultNode: sourceRouter.id});
+    }
+    const arp = {a: {node: source, iface: sourcePort}, b: {node: sourceRouter, iface: sourceRouterPort}};
+    steps.push({title: "Chọn next hop", note: source.name + " gửi gói đến default gateway " + source.gateway + "."});
+    steps.push({title: "ARP Request", note: source.name + " hỏi MAC của gateway " + source.gateway + " trong VLAN " + sourcePort.vlan + "."});
+    steps.push({title: "ARP Reply", note: sourceRouter.name + " trả lời bằng MAC " + sourceRouterPort.mac + "."});
+    if (mode === "arp") return outcome(true, "Đã phân giải MAC của gateway", {path: sourceLan, arp});
+
+    const forward = routeFromRouterToEndpoint(net, sourceRouter, dest.node, dest.iface);
+    const forwardPath = [...sourceLan, ...(forward.path || [])];
+    if (!forward.ok) {
+      steps.push({title: "Tra cứu tuyến chiều đi", note: forward.reason});
+      return outcome(false, "Gói tin không tới được đích", {path: forwardPath, arp, faultNode: forward.faultNode, faults: []});
+    }
+    steps.push({title: "Tra cứu tuyến chiều đi", note: (forward.routeNotes || []).join(" ") || "Router nguồn tìm được tuyến hợp lệ tới mạng đích."});
+    steps.push({title: "ICMP Echo Request", note: "Echo Request đi qua " + forwardPath.length + " liên kết và đã tới " + dest.node.name + "."});
+
+    const destRouter = net.devices.find(node => node.type === "router" &&
+      node.ports.some(iface => iface.ip === dest.node.gateway && iface.vlan === dest.iface.vlan));
+    const destRouterPort = destRouter?.ports.find(iface => iface.ip === dest.node.gateway && iface.vlan === dest.iface.vlan);
+    if (!destRouter || !destRouterPort) {
+      steps.push({title: "Thiếu tuyến hồi đáp", note: "Máy chủ đích không có default gateway hợp lệ để gửi Echo Reply."});
+      return outcome(false, "Echo Request tới đích nhưng không có đường hồi đáp", {path: forwardPath, arp, faultNode: dest.node.id});
+    }
+    const destLan = findPath(net, {node: dest.node, iface: dest.iface}, {node: destRouter, iface: destRouterPort});
+    if (!destLan) {
+      steps.push({title: "Thiếu tuyến hồi đáp", note: "Server không thể chuyển Echo Reply tới gateway " + dest.node.gateway + "."});
+      return outcome(false, "Echo Request tới đích nhưng LAN hồi đáp bị gián đoạn", {path: forwardPath, arp, faultNode: destRouter.id});
+    }
+    const reverse = routeFromRouterToEndpoint(net, destRouter, source, sourcePort);
+    const returnPath = [...destLan, ...(reverse.path || [])];
+    if (!reverse.ok) {
+      steps.push({title: "ICMP Echo Reply", note: "Server tạo Echo Reply và chuyển gói tới gateway " + dest.node.gateway + "."});
+      steps.push({title: "Thiếu tuyến hồi đáp", note: reverse.reason + " Gói Echo Reply dừng tại " + (device(net, reverse.faultNode)?.name || "router đích") + ". Thêm route tới mạng nguồn " + subnet(sourcePort) + " qua next hop " + sourceRouterPort.ip + " trên interface liên kết hai router."});
+      return outcome(false, "Echo Request tới đích nhưng thiếu tuyến hồi đáp", {
+        path: forwardPath, returnPath, arp, faultNode: reverse.faultNode || destRouter.id,
+        returnFailure: reverse.reason
+      });
+    }
+    steps.push({title: "ICMP Echo Reply", note: "Echo Reply quay về theo tuyến hợp lệ: " + (reverse.routeNotes || []).join(" ")});
+    return outcome(true, "Hoàn tất phép kiểm tra: Echo Request và Echo Reply đều tới nơi.", {
+      path: forwardPath, returnPath, arp, faultNode: ""
+    });
+  }
+
+  function probeInterdomain(net, sourceId, targetKey, mode) {
+    if (net.id === "case6") return probeCase6(net, sourceId, targetKey, mode);
+    const source = device(net, sourceId), dest = endpoint(net, targetKey);
+    const pathInfo = interdomainPath(net, sourceId, targetKey);
+    const steps = [];
+    const sourcePort = source?.ports[0];
+    const sourceIsRouter = source?.type === "router";
+    const gateway = sourceIsRouter ? source : net.devices.find(d => d.type === "router" &&
+      d.ports.some(p => p.ip === source?.gateway));
+    let arp = null;
+    if (source && sourcePort) {
+      if (sourceIsRouter && pathInfo.path.length) {
+        const firstLink = net.links.find(link => link.id === pathInfo.path[0]);
+        const other = firstLink && (firstLink.a.device === source.id ? firstLink.b : firstLink.b.device === source.id ? firstLink.a : null);
+        const peer = other && device(net, other.device);
+        const peerIface = other && port(peer, other.port);
+        if (peer && peerIface) arp = {a: {node: source, iface: port(source, firstLink.a.device === source.id ? firstLink.a.port : firstLink.b.port)}, b: {node: peer, iface: peerIface}};
+      } else if (!sourceIsRouter && gateway) {
+        const gatewayPort = gateway.ports.find(p => p.ip === source.gateway && p.vlan === sourcePort.vlan);
+        if (gatewayPort) arp = {a: {node: source, iface: sourcePort}, b: {node: gateway, iface: gatewayPort}};
+      }
+    }
+    const outcome = (ok, title, faultNode = "") => ({ok, title, steps, path: pathInfo.path, returnPath: [...pathInfo.path].reverse(), backup: pathInfo.backup, faults: pathInfo.faults, faultNode, arp});
+    if (!source?.ports[0]?.ip || !dest.iface?.ip) return outcome(false, "Chọn nguồn và đích hợp lệ");
+    if (!sourceIsRouter && !gateway) return outcome(false, "Không tìm thấy gateway", source.id);
+    if (sourceIsRouter) steps.push({title: "Khởi tạo định tuyến", note: source.name + " tra cứu bảng định tuyến và chọn next hop phù hợp."});
+    else steps.push({title: "Chọn next hop", note: "Nguồn gửi frame đầu tiên tới default gateway " + source.gateway + "."});
+    if (arp) {
+      steps.push({title: "ARP Request", note: arp.a.node.name + " phân giải MAC của next hop " + arp.b.iface.ip + " trong VLAN " + arp.a.iface.vlan + "."});
+      steps.push({title: "ARP Reply", note: arp.b.node.name + " trả lời MAC " + arp.b.iface.mac + "."});
+    }
+    if (mode === "arp") return outcome(!!arp, arp ? "Đã phân giải MAC của next hop" : "Không xác định được next hop để ARP", source.id);
     if (!pathInfo.path.length) {
       steps.push({title: "Không có tuyến liên miền", note: pathInfo.reason});
-      return outcome(false, "Không đến được đích", gateway.id);
+      return outcome(false, "Không đến được đích", gateway?.id || source.id);
     }
     steps.push({title: net.id === "case12" ? "BGP Best Path" : "Chuyển tiếp Multi-ISP", note: pathInfo.reason});
     steps.push({title: "ICMP", note: "Gói tin đi qua " + pathInfo.path.length + " liên kết tới " + dest.node.name + ", sau đó Echo Reply quay về theo tuyến hợp lệ."});
@@ -220,44 +380,107 @@
       const trial = structuredClone(network);
       const result = probe(trial, sourceId, targetKey, mode);
       const source = device(network, sourceId), dest = endpoint(network, targetKey);
-      const routeFlows = (route, reverse = false, kind = "icmp-request") => {
-        const ids = reverse ? [...route].reverse() : route;
-        let current = reverse ? dest.node.id : source.id;
-        return ids.map((id, index) => {
-          const link = network.links.find(item => item.id === id);
-          const next = link.a.device === current ? link.b.device : link.a.device;
-          const flow = {from: current, to: next, linkId: id, delay: index * 560, kind};
-          current = next;
-          return flow;
-        });
-      };
-      const gateway = network.devices.find(d => d.type === "router" && d.ports.some(p => p.ip === source?.gateway));
-      const gatewayPort = gateway?.ports.find(p => p.ip === source?.gateway);
-      const packet = (kind, reverse = false) => ({
-        kind, srcIP: reverse ? dest.iface.ip : source.ports[0].ip, dstIP: reverse ? source.ports[0].ip : dest.iface.ip,
-        srcMAC: reverse ? dest.iface.mac : source.ports[0].mac,
-        dstMAC: reverse ? source.ports[0].mac : (gatewayPort?.mac || "Chưa phân giải"),
-        nextHop: reverse ? source.ports[0].ip : (gatewayPort?.ip || "—"),
-        iface: reverse ? dest.node.name + " / " + dest.iface.id : source.name + " / " + source.ports[0].id,
-        ttl: 64
-      });
       const frames = [];
-      const add = (title, note, flows = [], data = null, error = false, focus = source?.id) => frames.push({
-        title, note, flows, data, error, focus, cache: structuredClone(network.cache),
-        marks: {path: result.path, backup: result.backup, faults: result.faults, faultNode: error ? (result.faultNode || focus) : ""}
+      const cache = structuredClone(network.cache || Object.create(null));
+      const allPath = [...new Set([...(result.path || []), ...(result.returnPath || [])])];
+      const marks = {path: allPath, backup: result.backup || [], faults: result.faults || [], faultNode: result.faultNode || ""};
+      const add = (title, note, flows = [], packetData = null, error = false, focus = source?.id) => frames.push({
+        title, note, flows, packet: packetData, error, focus, cache: structuredClone(cache), marks
       });
-      for (const step of result.steps) {
-        if (step.title === "ARP Request") add(step.title, step.note, routeFlows(result.path.slice(0, 1), false, "arp-request"), {...packet("arp-request"), dstMAC: "ff:ff:ff:ff:ff:ff"});
-        else if (step.title === "ARP Reply") add(step.title, step.note, routeFlows(result.path.slice(0, 1), true, "arp-reply"), packet("arp-reply", true));
-        else if (step.title === "ICMP") {
-          add("ICMP Echo Request", step.note, routeFlows(result.path), packet("icmp-request"));
-          add("ICMP Echo Reply", "Đích phản hồi qua tuyến hợp lệ.", routeFlows(result.path, true, "icmp-reply"), packet("icmp-reply", true));
+      const edge = (linkId, currentId) => {
+        const link = network.links.find(item => item.id === linkId);
+        if (!link) return null;
+        const from = link.a.device === currentId ? link.a : link.b.device === currentId ? link.b : null;
+        if (!from) return null;
+        const to = from === link.a ? link.b : link.a;
+        const fromNode = device(network, from.device), toNode = device(network, to.device);
+        const fromIface = port(fromNode, from.port), toIface = port(toNode, to.port);
+        return fromNode && toNode && fromIface && toIface ? {link, fromNode, toNode, fromIface, toIface} : null;
+      };
+      const flowsForRoute = (route, startId, kind) => {
+        let current = startId;
+        return (route || []).map((id, index) => {
+          const item = edge(id, current);
+          if (!item) return null;
+          const flow = {from: item.fromNode.id, to: item.toNode.id, linkId: id, delay: index * 560, kind};
+          current = item.toNode.id;
+          return flow;
+        }).filter(Boolean);
+      };
+      const makeArpPacket = (kind, from, to) => ({
+        kind, srcIP: from.iface.ip, dstIP: to.iface.ip,
+        srcMAC: from.iface.mac,
+        dstMAC: kind === "arp-request" ? "ff:ff:ff:ff:ff:ff" : to.iface.mac,
+        nextHop: to.iface.ip, iface: from.node.name + " / " + from.iface.id, ttl: null
+      });
+      let arpPair = result.arp || null;
+      if (!arpPair && source && source.type !== "router") {
+        const router = network.devices.find(node => node.type === "router" && node.ports.some(iface => iface.ip === source.gateway));
+        const iface = router?.ports.find(item => item.ip === source.gateway);
+        if (iface) arpPair = {a: {node: source, iface: source.ports[0]}, b: {node: router, iface}};
+      }
+      if (!arpPair && source?.type === "router" && result.path?.length) {
+        const first = edge(result.path[0], source.id);
+        if (first) arpPair = {a: {node: first.fromNode, iface: first.fromIface}, b: {node: first.toNode, iface: first.toIface}};
+      }
+      const routePackets = (route, startId, reverse = false) => {
+        let current = startId, ttl = 64;
+        for (const linkId of route || []) {
+          const item = edge(linkId, current);
+          if (!item) break;
+          if (item.fromNode.type === "router") ttl = Math.max(1, ttl - 1);
+          const data = {
+            kind: reverse ? "icmp-reply" : "icmp-request",
+            srcIP: reverse ? dest.iface.ip : source.ports[0].ip,
+            dstIP: reverse ? source.ports[0].ip : dest.iface.ip,
+            srcMAC: item.fromIface.mac, dstMAC: item.toIface.mac,
+            nextHop: item.toIface.ip || item.toNode.name,
+            iface: item.fromNode.name + " / " + item.fromIface.id,
+            ttl
+          };
+          const title = (reverse ? "ICMP Echo Reply" : "ICMP Echo Request") + " · " + item.fromNode.name + " → " + item.toNode.name;
+          add(title, reverse ? "Echo Reply được chuyển tiếp qua liên kết này; IP nguồn/đích đảo chiều, MAC thay đổi theo next hop." :
+            "Echo Request được chuyển tiếp qua liên kết này; IP nguồn/đích được giữ nguyên, MAC thuộc frame của chặng hiện tại.",
+            [{from: item.fromNode.id, to: item.toNode.id, linkId, delay: 0, kind: reverse ? "icmp-reply" : "icmp-request"}],
+            data, false, item.toNode.id);
+          current = item.toNode.id;
+        }
+      };
+
+      for (const step of result.steps || []) {
+        if (step.title === "ARP Request" && arpPair) {
+          const route = findPath(network, arpPair.a, arpPair.b) || [];
+          add(step.title, step.note, flowsForRoute(route, arpPair.a.node.id, "arp-request"),
+            makeArpPacket("arp-request", arpPair.a, arpPair.b), false, arpPair.a.node.id);
+        } else if (step.title === "ARP Reply" && arpPair) {
+          if (arpPair.a.node.id === source?.id) {
+            const cacheKey = key(arpPair.a.node, arpPair.a.iface);
+            (cache[cacheKey] ??= Object.create(null))[arpPair.b.iface.ip] = arpPair.b.iface.mac;
+          }
+          const route = findPath(network, arpPair.b, arpPair.a) || [];
+          add(step.title, step.note, flowsForRoute(route, arpPair.b.node.id, "arp-reply"),
+            makeArpPacket("arp-reply", arpPair.b, arpPair.a), false, arpPair.a.node.id);
+        } else if (step.title === "ICMP" || step.title === "ICMP Echo Request") {
+          routePackets(result.path, source.id, false);
+        } else if (step.title === "ICMP Echo Reply") {
+          routePackets(result.returnPath, dest.node.id, true);
+        } else if (step.title === "Thiếu tuyến hồi đáp") {
+          add(step.title, step.note, [], {
+            kind: "decision", srcIP: dest.iface.ip, dstIP: source.ports[0].ip,
+            srcMAC: dest.iface.mac, dstMAC: "Chưa có next hop hợp lệ",
+            nextHop: "Không tìm thấy tuyến", iface: (device(network, result.faultNode)?.name || "Router đích"), ttl: 62
+          }, true, result.faultNode || dest.node.id);
         } else {
-          const error = step.title.includes("Không có tuyến");
-          add(step.title, step.note, [], packet("decision"), error, error ? (result.faultNode || gateway?.id) : source?.id);
+          const isFailure = !result.ok && (step.title.includes("Không có tuyến") || step.title.includes("Không đến được") || step.title.includes("Thiếu") || step.title.includes("Không thể"));
+          add(step.title, step.note, [], {
+            kind: "decision", srcIP: source?.ports[0]?.ip, dstIP: dest.iface?.ip,
+            srcMAC: source?.ports[0]?.mac, dstMAC: "—", nextHop: "—",
+            iface: source?.name || "—", ttl: null
+          }, isFailure, result.faultNode || source?.id);
         }
       }
-      add(result.ok ? "Hoàn tất phép kiểm tra" : "Dừng tại điểm lỗi", result.title, [], frames.at(-1)?.packet, !result.ok, result.faultNode || dest.node.id);
+      add(result.ok ? "Hoàn tất phép kiểm tra" : "Dừng tại điểm lỗi", result.title,
+        [], frames.at(-1)?.packet || null, !result.ok, result.faultNode || dest.node.id);
       return {result, frames};
     }
     const trial = structuredClone(network);
@@ -564,7 +787,8 @@
     ],
     case6: [
       {label: "MẠNG NGUỒN", tone: "blue", match: ["pc-c6"]},
-      {label: "ROUTER LIÊN KẾT", tone: "amber", match: ["r6"]},
+      {label: "ROUTER NGUỒN", tone: "amber", match: ["r6-src"]},
+      {label: "ROUTER ĐÍCH", tone: "violet", match: ["r6-dst"]},
       {label: "MẠNG ĐÍCH", tone: "teal", match: ["srv-c6"]}
     ],
     case7: [
@@ -684,6 +908,17 @@
       (iface.mac ? '<br>' + esc(iface.mac) : '') + '</div></div>').join("");
     const p = node.ports[0];
     const editable = node.type !== "switch";
+    const routePanel = net.id === "case6" && node.type === "router" ?
+      '<details class="inline-details route-editor" open><summary>Bảng định tuyến tĩnh</summary>' +
+      '<p class="muted">Thêm tuyến đến mạng cần truy cập. Với Router đích, cần route về <b>10.0.10.0/24</b> qua <b>192.168.100.1</b> trên <b>g0/0</b>.</p>' +
+      ((node.routes || []).length ? '<div class="route-list">' + node.routes.map((route, index) =>
+        '<div class="route-row"><span><b>' + esc(route.prefix) + '</b><small>via ' + esc(route.nextHop) + ' · ' + esc(route.interface) + '</small></span>' +
+        '<button type="button" class="small secondary" data-action="delete-route" data-route-index="' + index + '">Xóa</button></div>').join("") + '</div>' :
+        '<p class="empty-route">Chưa có static route. Router chỉ biết các mạng kết nối trực tiếp.</p>') +
+      '<form id="route-form"><label>Mạng đích / Prefix<input name="prefix" required value="' + (node.id === "r6-dst" ? "10.0.10.0/24" : "10.0.20.0/24") + '" placeholder="10.0.10.0/24"></label>' +
+      '<div class="two"><label>Next hop<input name="nextHop" required inputmode="decimal" value="' + (node.id === "r6-dst" ? "192.168.100.1" : "192.168.100.2") + '"></label>' +
+      '<label>Interface<select name="interface">' + node.ports.map(iface => option(iface.id, iface.id, iface.id === (node.id === "r6-dst" ? "g0/0" : "g0/1"))).join("") + '</select></label></div>' +
+      '<button class="primary">Lưu static route</button></form></details>' : "";
     host.innerHTML = '<div class="object-title"><strong>' + esc(node.name) + '</strong><span class="state ' +
       (state === "Up" ? "yes" : "no") + '">' + state + '</span></div><p class="port-desc">' + typeNames[node.type] +
       (node.gateway ? " · GW " + esc(node.gateway) : "") + '</p><div class="ports">' + ports + '</div>' +
@@ -692,7 +927,7 @@
         esc(p.ip) + '" placeholder="192.168.10.10"></label><label>Prefix<input name="prefix" type="number" min="0" max="32" required value="' +
         p.prefix + '"></label></div><label>VLAN<input name="vlan" type="number" min="1" max="4094" required value="' +
         p.vlan + '"></label>' + (node.type === "router" ? "" : '<label>Default gateway<input name="gateway" inputmode="decimal" value="' +
-        esc(node.gateway) + '"></label>') + '<button class="primary">Lưu cấu hình</button></form></details>' : "") +
+        esc(node.gateway) + '"></label>') + '<button class="primary">Lưu cấu hình</button></form></details>' : "") + routePanel +
       '<button type="button" class="text-danger" data-action="delete-device">Xóa thiết bị</button>';
   }
 
@@ -723,10 +958,11 @@
       '<li><strong>' + esc(step.title) + '</strong><span>' + esc(step.note) + '</span></li>').join("") + '</ol></details>' :
       '<h3>Chưa chạy phép kiểm tra</h3><p class="muted">Bắt đầu một lượt để xem kết quả và đối chiếu với cấu hình.</p>';
     const src = device(net, srcId);
-    const entries = src ? Object.entries(net.cache[key(src, src.ports[0])] ?? {}) : [];
+    const entries = src ? src.ports.flatMap(iface => Object.entries(net.cache[key(src, iface)] ?? {})
+      .map(([ip, mac]) => ({ip, mac, iface: iface.id}))) : [];
     byId("clear-cache").disabled = !src;
-    byId("cache").innerHTML = entries.length ? '<table><thead><tr><th scope="col">IP</th><th scope="col">MAC</th></tr></thead><tbody>' +
-      entries.map(([ip, mac]) => '<tr><td>' + esc(ip) + '</td><td>' + esc(mac) + '</td></tr>').join("") +
+    byId("cache").innerHTML = entries.length ? '<table><thead><tr><th scope="col">Interface</th><th scope="col">IP</th><th scope="col">MAC</th></tr></thead><tbody>' +
+      entries.map(entry => '<tr><td>' + esc(entry.iface) + '</td><td>' + esc(entry.ip) + '</td><td>' + esc(entry.mac) + '</td></tr>').join("") +
       '</tbody></table>' : '<p class="muted">Chưa có ánh xạ IP–MAC ở bước này.</p>';
   }
 
@@ -796,6 +1032,14 @@
   byId("inspector").addEventListener("click", event => {
     const action = event.target.closest("[data-action]")?.dataset.action;
     if (!action) return;
+    if (action === "delete-route") {
+      const node = device(net, selected.id);
+      const index = Number(event.target.closest("[data-route-index]")?.dataset.routeIndex);
+      if (!node || !Array.isArray(node.routes) || !Number.isInteger(index) || index < 0 || index >= node.routes.length) return;
+      node.routes.splice(index, 1);
+      changed("Đã xóa static route trên " + node.name + ".");
+      return;
+    }
     if (action === "delete-device") {
       const name = device(net, selected.id).name;
       net.devices = net.devices.filter(node => node.id !== selected.id);
@@ -825,6 +1069,31 @@
     event.preventDefault();
     const form = event.target;
     const values = new FormData(form);
+    if (form.id === "route-form") {
+      const node = device(net, selected.id);
+      if (!node || node.type !== "router" || net.id !== "case6") return;
+      const prefixInput = String(values.get("prefix") || "").trim();
+      const nextHop = String(values.get("nextHop") || "").trim();
+      const ifaceId = String(values.get("interface") || "").trim();
+      const parts = prefixInput.split("/");
+      const networkAddress = ipv4(parts[0]);
+      const prefix = Number(parts[1]);
+      if (networkAddress === null || parts.length !== 2 || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) {
+        return announce("Mạng đích phải có dạng IPv4/Prefix hợp lệ, ví dụ 10.0.10.0/24.", true);
+      }
+      if (nextHop === "" || ipv4(nextHop) === null) return announce("Next hop phải là địa chỉ IPv4 hợp lệ.", true);
+      const iface = port(node, ifaceId);
+      if (!iface || !inSubnet(nextHop, iface)) return announce("Next hop không thuộc subnet của interface đã chọn.", true);
+      const bits = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+      const canonicalPrefix = ipText((networkAddress & bits) >>> 0) + "/" + prefix;
+      node.routes ||= [];
+      const existing = node.routes.find(route => route.prefix === canonicalPrefix);
+      const route = {prefix: canonicalPrefix, nextHop, interface: ifaceId};
+      if (existing) Object.assign(existing, route);
+      else node.routes.push(route);
+      changed("Đã lưu tuyến " + canonicalPrefix + " qua " + nextHop + " trên " + node.name + ".");
+      return;
+    }
     if (form.id === "link-form") {
       const cost = Number(values.get("cost"));
       if (!Number.isInteger(cost) || cost < 1 || cost > 9999) return announce("Cost phải là số nguyên từ 1 đến 9999.", true);
@@ -903,7 +1172,7 @@
     const source = device(net, srcId);
     if (!source) return;
     clearPlayback();
-    delete net.cache[key(source, source.ports[0])];
+    source.ports.forEach(iface => delete net.cache[key(source, iface)]);
     result = null;
     overlay = null;
     renderMap(); renderResult();

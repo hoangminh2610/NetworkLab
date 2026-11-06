@@ -96,6 +96,13 @@ details { border-top: 1px solid var(--line); padding: 8px 0; }
 details:last-child { padding-bottom: 0; }
 summary { cursor: pointer; font-weight: 700; font-size: .89rem; }
 details[open] > form { margin-top: 9px; }
+.route-editor { margin-top: 8px; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: #f8fbfc; }
+.route-editor > summary { color: var(--ink); }
+.route-editor > .muted { font-size: .8rem; line-height: 1.45; margin: 8px 0; }
+.route-list { display: grid; gap: 6px; margin: 8px 0 10px; }
+.route-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 7px; background: white; }
+.route-row small { display: block; margin-top: 2px; color: var(--muted); font-size: .76rem; }
+.empty-route { color: var(--muted); font-size: .82rem; margin: 8px 0; }
 .error-note { color: var(--rose); margin-bottom: 7px; font-size: .84rem; }
 .checks { margin-top: 16px; }
 .preset { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; color: var(--muted); font-size: .84rem; }
@@ -501,4 +508,10 @@ button:not(:disabled):active {
 .zone-blue { fill:#e6f0fbb8; stroke:#8fb2dc; }
 .zone-teal { fill:#e4f5f1b8; stroke:#8dbdb5; }
 .zone-amber { fill:#fcf1dbbf; stroke:#c9a774; }
-.zone-violet { fill:#eee9fabf; stroke:#b3a2dc; }
+.zone-violet { fill:#eee9fabf; stroke:#b3a2dc; }.route-editor { margin-top: 8px; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: #f8fbfc; }
+.route-editor > summary { color: var(--ink); }
+.route-editor > .muted { font-size: .8rem; line-height: 1.45; margin: 8px 0; }
+.route-list { display: grid; gap: 6px; margin: 8px 0 10px; }
+.route-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 7px; background: white; }
+.route-row small { display: block; margin-top: 2px; color: var(--muted); font-size: .76rem; }
+.empty-route { color: var(--muted); font-size: .82rem; margin: 8px 0; }
