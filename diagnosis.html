@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Network Lab · Nhóm 4 · Chẩn đoán &amp; kiểm thử</title>
+  <link rel="stylesheet" href="style.css">
+  
+  <style>
+    .diagnosis { padding-top: 8px; }
+    .diag-card, .network {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 22px;
+      margin: 16px 0;
+      box-shadow: 0 8px 20px #244b7c0d;
+    }
+
+    /* 1. Animation cho gói tin trên Banner và Nút trạng thái #phase */
+    #phase {
+      background: #16847a38;
+      border-color: #6cdfcf80;
+      color: #6cdfcf;
+      font-weight: 800;
+    }
+    .orbit-one { animation: orbit-pulse 6s ease-in-out infinite; }
+    @keyframes orbit-pulse {
+      50% { border-color: #6cdfcf66; box-shadow: 0 0 18px #6cdfcf1a; }
+    }
+
+    /* 2. Animation tín hiệu chạy dọc theo thanh sơ đồ PC ── LAN ── R1 ── WAN ── R2 ── SERVER */
+    .network {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      text-align: center;
+      background: linear-gradient(90deg, #ffffff 0%, #f0f7ff 50%, #ffffff 100%);
+      background-size: 200% 100%;
+      animation: bg-shimmer 6s linear infinite;
+      font-weight: 800;
+    }
+    .network span {
+      background: #f8fafd;
+      border: 1px solid #d5e2ef;
+      padding: 8px 16px;
+      border-radius: 12px;
+      box-shadow: 0 3px 6px #142c3d08;
+      transition: transform 0.25s ease, border-color 0.25s ease;
+    }
+    .network span:hover {
+      transform: translateY(-3px);
+      border-color: #276bae;
+    }
+    .network i {
+      font-style: normal;
+      color: #276bae;
+      position: relative;
+      padding-bottom: 6px;
+    }
+    /* Hạt xung tín hiệu chạy qua lại trên đường dây LAN / WAN */
+    .network i::after {
+      content: "";
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      height: 3px;
+      border-radius: 99px;
+      background: linear-gradient(90deg, transparent, #276bae, #0c9e8b, transparent);
+      background-size: 200% 100%;
+      animation: packet-stream 2.2s linear infinite;
+    }
+    @keyframes packet-stream {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+    @keyframes bg-shimmer {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    /* 3. Animation cho các nút Phép kiểm tra và Hồ sơ điều tra */
+    .diag-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .test-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .test-grid button {
+      background: #f4f8fc;
+      color: var(--ink);
+      border-color: var(--line);
+      text-align: left;
+      transition: transform 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+    }
+    .test-grid button:hover {
+      background: #e3f0fb;
+      border-color: #92bce0;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 10px rgba(36, 103, 173, 0.12);
+    }
+
+    /* Animation trượt nhẹ khi mở từng bằng chứng trong Hồ sơ điều tra */
+    .diag-card details {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      margin: 8px 0;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+      animation: slide-fade-in 0.3s ease-out;
+    }
+    .diag-card details[open] {
+      border-color: #276bae;
+      box-shadow: 0 4px 12px rgba(36, 103, 173, 0.08);
+    }
+    @keyframes slide-fade-in {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .diag-card label { display: block; font-weight: 800; font-size: .8rem; margin: 12px 0 5px; }
+    .diag-card select, .diag-card textarea { width: 100%; padding: 9px; border: 1px solid var(--line); border-radius: 7px; font: inherit; }
+    .diag-card textarea { min-height: 92px; }
+    .diag-card summary { padding: 9px 12px; font-weight: 800; cursor: pointer; }
+    .diag-card pre { white-space: pre-wrap; overflow: auto; padding: 10px; background: #f4f8fc; border-radius: 6px; margin: 0 10px 10px; }
+    #evidence label { font-weight: 500; display: block; margin: 6px 0; }
+    #result { border-top: 2px solid var(--teal); margin-top: 16px; padding-top: 16px; animation: slide-fade-in 0.35s ease-out; }
+
+    @media (max-width: 780px) {
+      .diag-grid, .test-grid { grid-template-columns: 1fr; }
+      .network { overflow: auto; justify-content: flex-start; gap: 16px; }
+      .network span { min-width: 90px; }
+      .network i { min-width: 65px; }
+    }
+  </style>
+
+  <script defer src="topology-data.js"></script>
+  <script defer src="group-data.js"></script>
+  <script defer src="case8-10-data.js"></script>
+  <script defer src="case-order.js"></script>
+  <script defer src="route-data.js"></script>
+  <script defer src="route-lookup.js"></script>
+  <script defer src="routing.js"></script>
+  <script defer src="static-routing.js"></script>
+  <script defer src="ospf.js"></script>
+  <script defer src="isp.js"></script>
+  <script defer src="bgp.js"></script>
+  <script defer src="mystery-case.js"></script>
+  <script defer src="troubleshooting.js"></script>
+  <script defer src="scenario-adapters.js"></script>
+  <script defer src="app.js"></script>
+</head>
+
+<body>
+  <header class="topbar wrap">
+    <a href="index.html" class="brand">
+      <span class="brand-icon">⬡</span> NETWORK<span class="brand-light">LAB</span><span class="separator">/</span><span class="chapter">CHƯƠNG 04</span>
+    </a>
+    <nav class="tab-nav" aria-label="Điều hướng chính">
+      <a href="index.html">12 kịch bản</a>
+      <a class="active" href="diagnosis.html">Chẩn đoán &amp; kiểm thử</a>
+    </nav>
+    <span class="offline"><i></i> Chạy offline · Nhóm 4</span>
+  </header>
+
+  <main class="wrap diagnosis">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">NETWORK TROUBLESHOOTING LAB</p>
+        <h1>Chẩn đoán sự cố<br>theo bằng chứng<span>.</span></h1>
+        <p>Thực hiện phép đo, ghi nhận bằng chứng và nộp kết luận trước khi mở lời giải.</p>
+        <div class="hero-tags">
+          <span id="phase">01 / ĐIỀU TRA</span>
+          <span>Mô hình IPv4</span>
+          <span>Không NAT · Không ACL</span>
+        </div>
+      </div>
+      <div class="hero-art" aria-hidden="true">
+        <div class="orbit orbit-one"></div>
+        <div class="orbit orbit-two"></div>
+        <div class="hero-chip chip-source">PC</div>
+        <div class="hero-chip chip-gateway">R1</div>
+        <div class="hero-chip chip-dest">SRV</div>
+        <div class="hero-packet">PROBE</div>
+        <span class="hero-art-label">MEASURE → EVIDENCE → CONCLUSION</span>
+      </div>
+    </section>
+
+    <section class="diag-card">
+      <label for="scenario">Chọn thử thách</label>
+      <select id="scenario">
+        <option value="mystery">Mystery Case · bốn biến thể ngẫu nhiên</option>
+        <option value="case1">Case 1 · Laptop và máy in</option>
+        <option value="case3">Case 3 · VLAN khách</option>
+        <option value="case5">Case 5 · Longest Prefix Match</option>
+        <option value="case6">Case 6 · Tuyến chiều về</option>
+        <option value="case7">Case 7 · Vòng lặp và TTL</option>
+        <option value="case8">Case 8 · Static dự phòng</option>
+        <option value="case9">Case 9 · Hop count RIP</option>
+        <option value="case10">Case 10 · Cost OSPF</option>
+        <option value="case11">Case 11 · Dự phòng ISP</option>
+        <option value="case12">Case 12 · Chính sách BGP</option>
+      </select>
+      <div class="panel-head" style="margin-top:18px">
+        <div>
+          <p class="eyebrow">TRIỆU CHỨNG BAN ĐẦU</p>
+          <h2 id="title"></h2>
+          <p id="symptom" class="case-desc"></p>
+        </div>
+        <div>
+          <button id="new" class="secondary">Tạo lượt mới</button>
+          <span id="round" class="muted"></span>
+        </div>
+      </div>
+    </section>
+
+    <div class="diag-grid">
+      <section class="diag-card">
+        <div class="panel-head">
+          <h2>01 · Phép kiểm tra</h2>
+          <span id="count" class="muted">0 bằng chứng</span>
+        </div>
+        <div id="tests" class="test-grid"></div>
+        <h3>Hồ sơ điều tra</h3>
+        <p id="empty" class="muted">Chưa có phép kiểm tra. Hãy bắt đầu bằng cấu hình IP hoặc kết nối LAN.</p>
+        <div id="history"></div>
+      </section>
+
+      <section class="diag-card">
+        <h2>02 · Nộp kết luận</h2>
+        <form id="diagnosis">
+          <label>Nguyên nhân theo bằng chứng
+            <select id="cause" required>
+              <option value="">Chọn giả thuyết</option>
+              <option value="wrong-gateway">Sai default gateway</option>
+              <option value="mac-change">ARP cache cũ sau thay gateway</option>
+              <option value="missing-return">Thiếu tuyến về</option>
+              <option value="link-down">Mất liên kết R1–R2</option>
+              <option value="wrong-subnet">Sai subnet</option>
+              <option value="vlan-policy">Chính sách VLAN</option>
+              <option value="longest-prefix">Longest Prefix Match</option>
+              <option value="routing-loop">Vòng lặp định tuyến</option>
+              <option value="main-down">Tuyến chính bị ngắt</option>
+              <option value="hop-metric">Ưu tiên hop count</option>
+              <option value="cost-change">Cost thay đổi</option>
+              <option value="isp-down">Tuyến ISP bị ngắt</option>
+              <option value="local-pref">Local Preference cao hơn</option>
+            </select>
+          </label>
+          <label>Lập luận kỹ thuật
+            <textarea id="hypothesis" required placeholder="Dữ liệu nào ủng hộ kết luận? Hãy loại trừ các nguyên nhân khác."></textarea>
+          </label>
+          <label>Biện pháp đề xuất
+            <select id="remedy" required>
+              <option value="">Chọn biện pháp</option>
+              <option value="set-gateway">Sửa default gateway</option>
+              <option value="verify-mac">Xác minh MAC và làm mới ARP cache</option>
+              <option value="add-return-route">Bổ sung tuyến về</option>
+              <option value="restore-link">Khôi phục liên kết</option>
+              <option value="fix-subnet">Sửa subnet</option>
+              <option value="allow-policy">Cho phép policy</option>
+              <option value="keep-lpm">Giữ quy tắc LPM</option>
+              <option value="fix-loop">Sửa next hop</option>
+              <option value="enable-backup">Bật tuyến dự phòng</option>
+              <option value="keep-hop">Giữ metric RIP</option>
+              <option value="restore-cost">Khôi phục cost</option>
+              <option value="restore-isp">Khôi phục ISP chính</option>
+              <option value="keep-policy">Giữ chính sách BGP</option>
+            </select>
+          </label>
+          <fieldset>
+            <legend>Chọn ít nhất hai bằng chứng</legend>
+            <div id="evidence"></div>
+          </fieldset>
+          <p id="message" class="notice"></p>
+          <button type="submit" class="primary">Nộp kết luận &amp; mở lời giải</button>
+        </form>
+        <div id="result" hidden>
+          <p class="eyebrow">ĐÁNH GIÁ THEO BẰNG CHỨNG</p>
+          <h2 id="score"></h2>
+          <p id="feedback"></p>
+          <h3>Giải thích</h3>
+          <p id="solution"></p>
+          <p id="caution" class="case-desc"></p>
+          <button id="repair" class="secondary">Thử biện pháp đã đề xuất</button>
+          <pre id="retest"></pre>
+          <button id="export" class="secondary">Tải biên bản</button>
+        </div>
+      </section>
+    </div>
+    
+    <div class="network" hidden></div>
+    
+    <footer>
+      <span>NETWORK LAB · NHÓM 4</span>
+      <span>Trang chẩn đoán độc lập nhưng dùng chung dữ liệu và engine của 12 kịch bản.</span>
+    </footer>
+  </main>
+  
+  <iframe id="tv1-engine" title="Engine mô phỏng" src="index.html" hidden></iframe>
+</body>
+</html>

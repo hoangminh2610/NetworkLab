@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#17365d">
+<title>Network Lab · Nhóm 4 · 12 kịch bản định tuyến</title>
+<link rel="stylesheet" href="style.css">
+<script defer src="topology-data.js"></script>
+<script defer src="group-data.js"></script>
+<script defer src="case8-10-data.js"></script>
+<script defer src="case-order.js"></script>
+<script defer src="arp.js"></script>
+<script defer src="route-data.js"></script>
+<script defer src="route-lookup.js"></script>
+<script defer src="routing.js"></script>
+<script defer src="static-routing.js"></script>
+<script defer src="ospf.js"></script>
+<script defer src="topology.js"></script>
+<script defer src="packet-inspector.js"></script>
+<script defer src="packet-simulator.js"></script>
+<script defer src="event-timeline.js"></script>
+<script defer src="isp.js"></script>
+<script defer src="bgp.js"></script>
+<script defer src="baseline-comparison.js"></script>
+<script defer src="group-features.js"></script>
+</head>
+<body>
+<header class="topbar wrap">
+  <a href="#main" class="brand"><span class="brand-icon" aria-hidden="true">⬡</span> NETWORK<span class="brand-light">LAB</span><span class="separator">/</span><span class="chapter">CHƯƠNG 04</span></a>
+  <nav class="tab-nav" aria-label="Điều hướng chính"><a class="active" href="index.html">12 kịch bản</a><a href="diagnosis.html">Chẩn đoán &amp; kiểm thử</a></nav>
+  <span class="offline"><i></i> Chạy offline · Nhóm 4</span>
+</header>
+<main class="wrap" id="main">
+  <section class="hero">
+    <div class="hero-copy">
+      <p class="eyebrow">NETWORK LAB · NHÓM 4 · 12 KỊCH BẢN</p>
+      <h1>Theo dấu<br>từng tuyến mạng<span>.</span></h1>
+      <p>Khám phá ARP, static routing, RIP, OSPF, Multi-ISP<br>và BGP qua các tình huống mô phỏng tương tác.</p>
+      <div class="hero-tags"><span>12 kịch bản thực hành</span><span>Routing &amp; Packet Analysis</span><span>Chạy offline</span></div>
+    </div>
+    <div class="hero-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="hero-chip chip-source">PC</div><div class="hero-chip chip-gateway">GW</div><div class="hero-chip chip-dest">IP</div><div class="hero-packet">ARP</div><span class="hero-art-label">LOCAL → NEXT HOP → DESTINATION</span></div>
+  </section>
+
+  <section class="scenario-bar">
+    <label class="scenario-picker"><span class="eyebrow">BẮT ĐẦU KHÁM PHÁ</span>
+      <select id="scenario" aria-label="Kịch bản"></select>
+    </label>
+    <div id="preset" class="preset"></div>
+    <button id="reset" class="secondary">↻ Đặt lại</button>
+  </section>
+
+  <div class="lab">
+    <div class="main-column">
+      <section class="panel map-panel" aria-labelledby="map-title">
+        <div class="panel-head">
+          <div><span class="eyebrow" id="case-number"></span><h2 id="map-title"></h2></div>
+          <span class="map-hint">Nhấp thiết bị hoặc cáp để sửa</span>
+        </div>
+        <p class="case-desc" id="case-desc"></p>
+        <div class="map-scroll"><svg id="map" viewBox="0 0 900 380" aria-label="Sơ đồ topology tương tác"></svg></div>
+        <div class="legend" aria-label="Chú giải sơ đồ">
+          <span><i class="line active"></i> Đường hiện tại</span><span><i class="line backup"></i> Dự phòng</span><span><i class="line down"></i> Liên kết lỗi</span>
+          <span><i class="dot arp-dot"></i> ARP Request</span><span><i class="dot reply-dot"></i> ARP Reply</span><span><i class="dot ip-dot"></i> ICMP</span>
+        </div>
+        <div class="probe-controls">
+          <label>Nguồn<select id="source" aria-label="Nguồn"></select></label>
+          <span class="source-arrow" aria-hidden="true">→</span>
+          <label>Đích<select id="target" aria-label="Đích"></select></label>
+          <div class="actions"><button id="ping" class="primary">Chạy ping</button><button id="arp" class="secondary">Kiểm tra ARP</button></div>
+        </div>
+        <div class="playback-toolbar" aria-label="Điều khiển hoạt ảnh">
+          <div class="play-buttons"><button id="prev" class="secondary" aria-label="Bước trước">←</button><button id="play" class="primary">▶ Tự chạy</button><button id="next" class="secondary" aria-label="Bước tiếp theo">→</button></div>
+          <span id="step-counter" class="step-counter">Sẵn sàng</span>
+          <label class="speed-control">Tốc độ<select id="speed" aria-label="Tốc độ"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label>
+        </div>
+      </section>
+      <section class="stage-card" aria-live="polite">
+        <div class="stage-header"><span class="eyebrow" id="stage-kind">QUAN SÁT TỪNG BƯỚC</span><span id="stage-number"></span></div>
+        <h2 id="stage-title">Một thay đổi nhỏ. Một hành trình khác.</h2>
+        <p id="stage-note">Chọn nguồn, đích rồi chạy ping hoặc kiểm tra ARP. Bạn có thể tự chạy, tạm dừng hoặc xem lại từng bước.</p>
+      </section>
+    </div>
+
+    <aside class="right-column">
+      <section class="panel progress-panel" aria-labelledby="progress-title">
+        <div class="panel-head"><h2 id="progress-title">Tiến trình mô phỏng</h2><span id="progress-count">0 bước</span></div>
+        <div class="progress-track"><div id="progress-fill"></div></div>
+        <div id="step-list" class="step-list"><p class="muted">Các bước sẽ xuất hiện khi bạn bắt đầu.</p></div>
+      </section>
+      <section class="panel packet-panel" aria-labelledby="packet-title">
+        <div class="panel-head"><div><p class="eyebrow">GÓI TIN ĐANG MANG GÌ?</p><h2 id="packet-title">Packet Inspector</h2></div><span id="packet-badge" class="state neutral">Chưa chạy</span></div>
+        <div id="packet-fields"></div><div id="packet-inspector"></div>
+      </section>
+      <details class="panel side" id="config-panel">
+        <summary>Cấu hình mạng <span>Thiết bị &amp; liên kết</span></summary>
+        <div id="inspector"></div>
+        <details id="add-box"><summary>Thêm thiết bị</summary>
+          <form id="add-device">
+            <label>Tên thiết bị<input id="new-name" name="name" maxlength="28" required placeholder="Ví dụ: PC kho hàng"></label>
+            <div class="two"><label>Loại thiết bị<select name="type"><option value="pc">PC</option><option value="switch">Switch</option><option value="router">Router</option><option value="server">Server</option></select></label><label>VLAN ban đầu<input name="vlan" type="number" min="1" max="4094" required></label></div>
+            <button class="primary">Thêm vào sơ đồ</button>
+          </form>
+        </details>
+        <details id="link-box"><summary>Nối hai cổng</summary>
+          <form id="add-link"><label>Đầu A<select id="port-a" name="a" required></select></label><label>Đầu B<select id="port-b" name="b" required></select></label><button class="primary">Tạo liên kết</button></form>
+        </details>
+      </details>
+    </aside>
+  </div>
+
+  <section class="panel checks" aria-labelledby="probe-title">
+    <div class="panel-head"><div><p class="eyebrow">BẰNG CHỨNG KỸ THUẬT</p><h2 id="probe-title">Kết quả và ARP cache</h2></div></div>
+    <div class="check-grid">
+      <div class="result" id="result" aria-live="polite"></div>
+      <div class="cache"><div class="cache-head"><h3>ARP cache của nguồn</h3><button id="clear-cache" class="small secondary">Xóa cache</button></div><div id="cache"></div></div>
+    </div>
+  </section>
+  <p id="notice" class="notice" role="status" hidden></p>
+  <footer><span>NETWORK LAB · NHÓM 4</span><span>ARP, Static Routing, RIP, OSPF, Multi-ISP, BGP và Event Timeline. Chạy hoàn toàn trên trình duyệt.</span></footer>
+</main>
+</body>
+</html>
