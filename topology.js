@@ -771,14 +771,14 @@
   // Kịch bản có thể tự khai báo thuộc tính `zones` trong file dữ liệu để ghi đè bảng này.
   const CASE_ZONES = {
     case2: [
-      {label: "MẠNG NGƯỜI DÙNG", tone: "blue", match: ["Máy trạm"]},
-      {label: "GATEWAY", tone: "amber", match: ["Gateway"]},
-      {label: "MẠNG MÁY CHỦ", tone: "teal", match: ["Máy chủ dịch vụ"]}
+      {label: "MẠNG NGƯỜI DÙNG", tone: "blue", pad: 82, match: ["client", "lan-switch"]},
+      {label: "GATEWAY", tone: "amber", pad: 76, match: ["gateway"]},
+      {label: "MẠNG THIẾT BỊ / MÁY CHỦ", tone: "teal", pad: 82, match: ["suspect", "server"]}
     ],
     case4: [
-      {label: "LAN KẾ TOÁN", tone: "blue", match: ["pc-c4"]},
-      {label: "ROUTER CHI NHÁNH", tone: "amber", match: ["gw-c4"]},
-      {label: "MẠNG TRUNG TÂM", tone: "teal", match: ["srv-c4"]}
+      {label: "LAN KẾ TOÁN", tone: "blue", pad: 82, match: ["order-pc", "office-sw", "office-prn"]},
+      {label: "ROUTER GATEWAY", tone: "amber", pad: 76, match: ["gateway"]},
+      {label: "MẠNG MÁY CHỦ ĐƠN HÀNG", tone: "teal", pad: 82, match: ["order-srv"]}
     ],
     case5: [
       {label: "ROUTER MAIN", tone: "blue", match: ["r5-src"]},
